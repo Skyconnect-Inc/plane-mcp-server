@@ -34,7 +34,7 @@ env:
   RELEASE_VERSION: ${{ github.event.inputs.releaseVersion }}
   IS_PRERELEASE: ${{ github.event.inputs.isPrerelease }}
   REGISTRY: ghcr.io
-  IMAGE_NAME: plane-mcp-server
+  IMAGE_NAME: mcp
   GITOPS_REPO: skyconnect-inc/portainer-gitops
   GITOPS_BRANCH: main
   GITOPS_PATH: docs/pm/docker-compose.yml
