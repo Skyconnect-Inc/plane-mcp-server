@@ -20,42 +20,47 @@ on:
         type: boolean
         default: false
         required: true
+  push:
+    branches:
+      - production
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 env:
   TARGET_BRANCH: ${{ github.ref_name }}
   BUILD_TYPE: ${{ github.event.inputs.build_type }}
   RELEASE_VERSION: ${{ github.event.inputs.releaseVersion }}
   IS_PRERELEASE: ${{ github.event.inputs.isPrerelease }}
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+  GITOPS_REPO: skyconnect-inc/portainer-gitops
+  GITOPS_BRANCH: production
+  GITOPS_PATH: docs/pm/docker-compose.yml
 
 jobs:
-  release_build_setup:
-    name: Release Build Setup
+  branch_build_setup:
+    name: Build Setup
     runs-on: ubuntu-22.04
     outputs:
-      gh_buildx_driver: ${{ steps.set_env_variables.outputs.BUILDX_DRIVER }}
-      gh_buildx_version: ${{ steps.set_env_variables.outputs.BUILDX_VERSION }}
+      gh_branch_name: ${{ steps.set_env_variables.outputs.TARGET_BRANCH }}
       gh_buildx_platforms: ${{ steps.set_env_variables.outputs.BUILDX_PLATFORMS }}
-      gh_buildx_endpoint: ${{ steps.set_env_variables.outputs.BUILDX_ENDPOINT }}
-
-      build_type: ${{steps.set_env_variables.outputs.BUILD_TYPE}}
+      build_type: ${{ steps.set_env_variables.outputs.BUILD_TYPE }}
       build_release: ${{ steps.set_env_variables.outputs.BUILD_RELEASE }}
       build_prerelease: ${{ steps.set_env_variables.outputs.BUILD_PRERELEASE }}
       release_version: ${{ steps.set_env_variables.outputs.RELEASE_VERSION }}
-
-      dh_img_name: ${{ steps.set_env_variables.outputs.DH_IMG_NAME }}
 
     steps:
       - id: set_env_variables
         name: Set Environment Variables
         run: |
-          echo "BUILDX_DRIVER=docker-container" >> $GITHUB_OUTPUT
-          echo "BUILDX_VERSION=latest" >> $GITHUB_OUTPUT
           echo "BUILDX_PLATFORMS=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
-          echo "BUILDX_ENDPOINT=" >> $GITHUB_OUTPUT
 
-          echo "DH_IMG_NAME=plane-mcp-server" >> $GITHUB_OUTPUT
+          BR_NAME=$(echo "${{ env.TARGET_BRANCH }}" | sed 's/[^a-zA-Z0-9.-]//g')
+          echo "TARGET_BRANCH=$BR_NAME" >> $GITHUB_OUTPUT
 
-          echo "BUILD_TYPE=${{env.BUILD_TYPE}}" >> $GITHUB_OUTPUT
+          echo "BUILD_TYPE=${{ env.BUILD_TYPE }}" >> $GITHUB_OUTPUT
           BUILD_RELEASE=false
           BUILD_PRERELEASE=false
           RELVERSION="latest"
@@ -70,7 +75,7 @@ jobs:
               echo "Please provide a valid SemVer version"
               echo "e.g. v1.2.3 or v1.2.3-alpha-1"
               echo "Exiting the build process"
-              exit 1  # Exit with status 1 to fail the step
+              exit 1
             fi
             BUILD_RELEASE=true
             RELVERSION=$FLAT_RELEASE_VERSION
@@ -79,61 +84,85 @@ jobs:
               BUILD_PRERELEASE=true
             fi
           fi
+
           echo "BUILD_RELEASE=${BUILD_RELEASE}" >> $GITHUB_OUTPUT
           echo "BUILD_PRERELEASE=${BUILD_PRERELEASE}" >> $GITHUB_OUTPUT
           echo "RELEASE_VERSION=${RELVERSION}" >> $GITHUB_OUTPUT
 
+      - id: checkout_files
+        name: Checkout Files
+        uses: actions/checkout@v4
+
   build_and_push:
     name: Build-Push Plane MCP Server Docker Image
     runs-on: ubuntu-22.04
-    needs: [release_build_setup]
+    needs: [branch_build_setup]
     permissions:
       contents: read
       packages: write
     steps:
-      - id: checkout_files
-        name: Checkout Files
-        uses: actions/checkout@v4
-      - name: Plane MCP Server Build and Push
-        uses: makeplane/actions/build-push@v1.0.0
-        with:
-          build-release: ${{ needs.release_build_setup.outputs.build_release }}
-          build-prerelease: ${{ needs.release_build_setup.outputs.build_prerelease }}
-          release-version: ${{ needs.release_build_setup.outputs.release_version }}
-          dockerhub-username: ${{ secrets.DOCKERHUB_USERNAME }}
-          dockerhub-token: ${{ secrets.DOCKERHUB_TOKEN }}
-          docker-image-owner: makeplane
-          docker-image-name: ${{ needs.release_build_setup.outputs.dh_img_name }}
-          build-context: .
-          dockerfile-path: ./Dockerfile
-          buildx-driver: ${{ needs.release_build_setup.outputs.gh_buildx_driver }}
-          buildx-version: ${{ needs.release_build_setup.outputs.gh_buildx_version }}
-          buildx-platforms: ${{ needs.release_build_setup.outputs.gh_buildx_platforms }}
-          buildx-endpoint: ${{ needs.release_build_setup.outputs.gh_buildx_endpoint }}
-
-  publish_release:
-    if: ${{ needs.release_build_setup.outputs.build_type == 'Release' }}
-    name: Build Release
-    runs-on: ubuntu-22.04
-    needs:
-      [
-        release_build_setup,
-        build_and_push,
-      ]
-    env:
-      REL_VERSION: ${{ needs.release_build_setup.outputs.release_version }}
-    steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create Release
-        id: create_release
-        uses: softprops/action-gh-release@v2.1.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: Login to Container Registry
+        uses: docker/login-action@v2
         with:
-          tag_name: ${{ env.REL_VERSION }}
-          name: ${{ env.REL_VERSION }}
-          draft: false
-          prerelease: ${{ env.IS_PRERELEASE }}
-          generate_release_notes: true
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract metadata
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=ref,event=tag
+            type=ref,event=pr
+            type=sha
+
+      - name: Build and push
+        uses: docker/build-push-action@v4
+        with:
+          context: .
+          file: ./Dockerfile
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          platforms: ${{ needs.branch_build_setup.outputs.gh_buildx_platforms }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  update_gitops:
+    needs:
+      - branch_build_setup
+      - build_and_push
+    runs-on: ubuntu-latest
+    if: |
+      always() && 
+      github.ref == 'refs/heads/production' && 
+      github.event_name == 'push' && 
+      needs.build_and_push.result == 'success' &&
+      needs.branch_build_setup.result == 'success'
+    steps:
+      - name: Commit and push changes
+        run: |
+          SHORT_SHA="sha-${GITHUB_SHA::7}"
+          
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+
+          git add ${{ env.GITOPS_PATH }}
+
+          # Check if there are changes to commit
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Update plane-mcp-server image to ${SHORT_SHA}"
+            git push
+            echo "Changes committed and pushed successfully"
+          fi
