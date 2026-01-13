@@ -22,7 +22,7 @@ on:
         required: true
   push:
     branches:
-      - canary
+      - main
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -36,7 +36,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository }}
   GITOPS_REPO: skyconnect-inc/portainer-gitops
-  GITOPS_BRANCH: canary
+  GITOPS_BRANCH: main
   GITOPS_PATH: docs/pm/docker-compose.yml
 
 jobs:
@@ -144,7 +144,7 @@ jobs:
     runs-on: ubuntu-latest
     if: |
       always() && 
-      github.ref == 'refs/heads/canary' && 
+      github.ref == 'refs/heads/main' && 
       github.event_name == 'push' && 
       needs.build_and_push.result == 'success' &&
       needs.branch_build_setup.result == 'success'
