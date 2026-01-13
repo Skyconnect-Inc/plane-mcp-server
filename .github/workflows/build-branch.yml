@@ -34,7 +34,7 @@ env:
   RELEASE_VERSION: ${{ github.event.inputs.releaseVersion }}
   IS_PRERELEASE: ${{ github.event.inputs.isPrerelease }}
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
+  IMAGE_NAME: plane-mcp-server
   GITOPS_REPO: skyconnect-inc/portainer-gitops
   GITOPS_BRANCH: main
   GITOPS_PATH: docs/pm/docker-compose.yml
@@ -142,17 +142,33 @@ jobs:
       - branch_build_setup
       - build_and_push
     runs-on: ubuntu-latest
-    if: |
-      always() && 
-      github.ref == 'refs/heads/main' && 
-      github.event_name == 'push' && 
-      needs.build_and_push.result == 'success' &&
-      needs.branch_build_setup.result == 'success'
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     steps:
+      - name: Extract short SHA
+        id: sha
+        run: echo "short_sha=sha-${GITHUB_SHA::7}" >> $GITHUB_OUTPUT
+
+      - name: Checkout GitOps repository
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.GITOPS_REPO }}
+          token: ${{ secrets.GITOPS_TOKEN }}
+          path: gitops
+
+      - name: Update docker-compose.yml
+        run: |
+          cd gitops
+
+          # Update the image tag in docker-compose.yml
+          sed -i "s|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:.*|${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ steps.sha.outputs.short_sha }}|g" ${{ env.GITOPS_PATH }}
+
+          # Verify the change was made
+          echo "Updated ${{ env.GITOPS_PATH }} content:"
+          cat ${{ env.GITOPS_PATH }}
+
       - name: Commit and push changes
         run: |
-          SHORT_SHA="sha-${GITHUB_SHA::7}"
-          
+          cd gitops
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
 
@@ -162,7 +178,7 @@ jobs:
           if git diff --staged --quiet; then
             echo "No changes to commit"
           else
-            git commit -m "Update plane-mcp-server image to ${SHORT_SHA}"
+            git commit -m "Update ${{ env.IMAGE_NAME }} image to ${{ steps.sha.outputs.short_sha }}"
             git push
             echo "Changes committed and pushed successfully"
           fi
